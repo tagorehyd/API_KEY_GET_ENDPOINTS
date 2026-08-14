@@ -1,0 +1,15 @@
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "api-key-get-endpoints",
+  "main": "src/index.js",
+  "compatibility_date": "2026-08-14",
+  "observability": {
+    "enabled": true
+  },
+  "r2_buckets": [
+    {
+      "binding": "BUCKET",
+      "bucket_name": "api-key-get-endpoints"
+    }
+  ]
+}
