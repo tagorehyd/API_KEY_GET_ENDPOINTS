@@ -1,6 +1,7 @@
 # API Key Get Endpoints
 
 Cloudflare Worker that stores API keys in Cloudflare D1, lets Telegram admins set and retrieve keys, and exposes a REST endpoint that returns a key only after Telegram admin approval.
+8946391716:AAGXThJHdoNBTLAmBkxsPf7LTlkDVRl0dlI
 
 ## Behavior
 
