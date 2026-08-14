@@ -20,6 +20,7 @@ Secrets / variables:
 - `TELEGRAM_ADMIN_USER_IDS`: comma-separated Telegram user IDs allowed to run bot commands and approve REST requests.
 - `TELEGRAM_ADMIN_CHAT_IDS`: comma-separated Telegram chat IDs that should receive REST approval requests.
 - `TELEGRAM_WEBHOOK_SECRET`: optional Telegram webhook secret checked against `x-telegram-bot-api-secret-token`.
+- cfut_SbuJf44cisDpHvnapFpdWR-T@gore123+-5bulgbSlFqjeoV2lXXebd773fc
 
 ## Setup
 
