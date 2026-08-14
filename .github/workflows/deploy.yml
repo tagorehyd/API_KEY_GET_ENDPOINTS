@@ -38,7 +38,7 @@ jobs:
       - name: Set up Node.js
         uses: actions/setup-node@v5
         with:
-          node-version: 22
+          node-version: 24
           cache: npm
 
       - name: Install dependencies
@@ -53,9 +53,8 @@ jobs:
       - name: Apply D1 migrations
         run: npx wrangler d1 migrations apply api-key-get-endpoints --remote
 
+      - name: Verify Cloudflare authentication
+        run: npx wrangler whoami
+
       - name: Deploy Worker
-        uses: cloudflare/wrangler-action@v3
-        with:
-          apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
-          accountId: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
-          command: deploy
+        run: npx wrangler deploy
