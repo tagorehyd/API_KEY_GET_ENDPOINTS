@@ -1,6 +1,6 @@
 # API Key Get Endpoints
 
-Cloudflare Worker that stores API keys in one JSON file in Cloudflare R2, lets Telegram admins set and retrieve keys, and exposes a REST endpoint that returns a key only after Telegram admin approval.
+Cloudflare Worker that stores API keys in Cloudflare D1, lets Telegram admins set and retrieve keys, and exposes a REST endpoint that returns a key only after Telegram admin approval.
 
 ## Behavior
 
@@ -12,7 +12,7 @@ Cloudflare Worker that stores API keys in one JSON file in Cloudflare R2, lets T
 
 ## Required Cloudflare bindings and secrets
 
-Create an R2 bucket named `api-key-get-endpoints`, or let the GitHub Actions workflow create it. The Worker binding name is `BUCKET`, and the default storage object is `api-key-store.json`.
+Create a D1 database and update `wrangler.jsonc` with the generated `database_id`.
 
 Secrets / variables:
 
@@ -20,17 +20,13 @@ Secrets / variables:
 - `TELEGRAM_ADMIN_USER_IDS`: comma-separated Telegram user IDs allowed to run bot commands and approve REST requests.
 - `TELEGRAM_ADMIN_CHAT_IDS`: comma-separated Telegram chat IDs that should receive REST approval requests.
 - `TELEGRAM_WEBHOOK_SECRET`: optional Telegram webhook secret checked against `x-telegram-bot-api-secret-token`.
-- `R2_STORE_OBJECT_KEY`: optional R2 object key for the JSON storage file; defaults to `api-key-store.json`.
-
-## Web-only GitHub Actions deploy
-
-If you are deploying from the GitHub web UI, add `CLOUDFLARE_ACCOUNT_ID` and `CLOUDFLARE_API_TOKEN` as GitHub Actions secrets, then run the **Deploy Cloudflare Worker** workflow from the Actions tab. Use a token with Workers Scripts and R2 edit permissions. The workflow can create the R2 bucket automatically. See `docs-web-deploy.md` for the full no-terminal guide.
 
 ## Setup
 
 ```bash
 npm install
-npx wrangler r2 bucket create api-key-get-endpoints
+npx wrangler d1 create api-key-get-endpoints
+npx wrangler d1 migrations apply api-key-get-endpoints --remote
 npx wrangler secret put TELEGRAM_BOT_TOKEN
 npx wrangler secret put TELEGRAM_ADMIN_USER_IDS
 npx wrangler secret put TELEGRAM_ADMIN_CHAT_IDS
