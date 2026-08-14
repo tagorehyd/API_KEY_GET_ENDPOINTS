@@ -1,0 +1,16 @@
+{
+  "name": "api-key-get-endpoints",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "wrangler dev",
+    "deploy": "wrangler deploy",
+    "test": "node --check src/index.js"
+  },
+  "devDependencies": {
+    "@cloudflare/vitest-pool-workers": "^0.8.70",
+    "vitest": "^3.2.4",
+    "wrangler": "^4.29.1"
+  }
+}
