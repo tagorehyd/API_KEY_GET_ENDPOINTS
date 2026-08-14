@@ -21,10 +21,6 @@ Secrets / variables:
 - `TELEGRAM_ADMIN_CHAT_IDS`: comma-separated Telegram chat IDs that should receive REST approval requests.
 - `TELEGRAM_WEBHOOK_SECRET`: optional Telegram webhook secret checked against `x-telegram-bot-api-secret-token`.
 
-## Web-only GitHub Actions deploy
-
-If you are deploying from the GitHub web UI, add `CLOUDFLARE_ACCOUNT_ID`, `CLOUDFLARE_API_TOKEN`, and `CLOUDFLARE_D1_DATABASE_ID` as GitHub Actions secrets, then run the **Deploy Cloudflare Worker** workflow from the Actions tab. See `docs-web-deploy.md` for the full no-terminal guide.
-
 ## Setup
 
 ```bash
