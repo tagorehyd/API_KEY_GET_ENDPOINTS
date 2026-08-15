@@ -4,6 +4,8 @@ const STATUS_PENDING = "pending";
 const STATUS_APPROVED = "approved";
 const STATUS_REJECTED = "rejected";
 const STATUS_EXPIRED = "expired";
+const DELETE_SESSION_TTL_SECONDS = 10 * 60;
+let lastStartupConfigSignature;
 
 export default {
   async fetch(request, env) {
@@ -75,22 +77,32 @@ async function handleAdminMessage(env, chatId, text) {
     const [name, ...valueParts] = parts;
     const value = valueParts.join(" ");
     if (!name || !value) {
-      await sendTelegramMessage(env, chatId, "Usage: /setkey <name> <value>", adminMenuMarkup());
+      await sendTelegramMessage(env, chatId, "🔐 <b>Usage</b>\n<code>/setkey &lt;name&gt; &lt;value&gt;</code>", adminMenuMarkup());
       return;
     }
     await setApiKey(env, name, value);
-    await sendTelegramMessage(env, chatId, `API key '${name}' saved.`, adminMenuMarkup());
+    await sendTelegramMessage(env, chatId, `✅ API key <b>${escapeHtml(name)}</b> saved securely.`, adminMenuMarkup());
     return;
   }
 
   if (normalizedCommand === "/getkey") {
     const [name] = parts;
     if (!name) {
-      await sendTelegramMessage(env, chatId, "Usage: /getkey <name>", adminMenuMarkup());
+      await sendTelegramMessage(env, chatId, "🔎 <b>Usage</b>\n<code>/getkey &lt;name&gt;</code>", adminMenuMarkup());
       return;
     }
     const apiKey = await getApiKey(env, name);
-    await sendTelegramMessage(env, chatId, apiKey ? `${name}: ${apiKey}` : `No key found for '${name}'.`, adminMenuMarkup());
+    await sendTelegramMessage(env, chatId, apiKey ? `✅ <b>${escapeHtml(name)}</b>\n<code>${escapeHtml(apiKey)}</code>` : `⚠️ No key found for <b>${escapeHtml(name)}</b>.`, adminMenuMarkup());
+    return;
+  }
+
+  if (["/deletekey", "/deletekeys"].includes(normalizedCommand)) {
+    await sendDeleteKeysPicker(env, chatId);
+    return;
+  }
+
+  if (["/clear", "/clearchat"].includes(normalizedCommand)) {
+    await sendTelegramMessage(env, chatId, "🧹 <b>Fresh workspace ready.</b> Use the menu below to continue.", adminMenuMarkup());
     return;
   }
 
@@ -105,6 +117,11 @@ async function handleTelegramCallback(callbackQuery, env) {
     return json({ ok: true });
   }
 
+  if (callbackQuery.data?.startsWith("delete:")) {
+    await handleDeleteKeysCallback(callbackQuery, env);
+    return json({ ok: true });
+  }
+
   await handleApprovalCallback(callbackQuery, env);
   return json({ ok: true });
 }
@@ -114,14 +131,27 @@ async function handleMenuCallback(callbackQuery, env) {
   const action = callbackQuery.data.slice("menu:".length);
 
   if (action === "setkey") {
-    if (chatId) await sendTelegramMessage(env, chatId, "Send /setkey <name> <value> to save or update an API key.", adminMenuMarkup());
+    if (chatId) await sendTelegramMessage(env, chatId, "🔐 Send <code>/setkey &lt;name&gt; &lt;value&gt;</code> to save or update an API key.", adminMenuMarkup());
     await answerCallbackQuery(env, callbackQuery.id, "Set key instructions sent.");
     return;
   }
 
   if (action === "getkey") {
-    if (chatId) await sendTelegramMessage(env, chatId, "Send /getkey <name> to retrieve an API key.", adminMenuMarkup());
+    if (chatId) await sendTelegramMessage(env, chatId, "🔎 Send <code>/getkey &lt;name&gt;</code> to retrieve an API key.", adminMenuMarkup());
     await answerCallbackQuery(env, callbackQuery.id, "Get key instructions sent.");
+    return;
+  }
+
+  if (action === "deletekeys") {
+    if (chatId) await sendDeleteKeysPicker(env, chatId);
+    await answerCallbackQuery(env, callbackQuery.id, "Delete key picker opened.");
+    return;
+  }
+
+  if (action === "clearchat") {
+    await deleteTelegramMessage(env, chatId, callbackQuery.message?.message_id);
+    if (chatId) await sendTelegramMessage(env, chatId, "🧹 <b>Menu cleared.</b> Here is a fresh control panel:", adminMenuMarkup());
+    await answerCallbackQuery(env, callbackQuery.id, "Chat refreshed.");
     return;
   }
 
@@ -133,17 +163,23 @@ async function sendAdminMenu(env, chatId) {
   await sendTelegramMessage(
     env,
     chatId,
-    "Hi! Choose an option below, or use /setkey <name> <value> and /getkey <name>.",
+    "✨ <b>API Key Command Center</b> ✨\n\nChoose a secure action below, or use:\n🔐 <code>/setkey &lt;name&gt; &lt;value&gt;</code>\n🔎 <code>/getkey &lt;name&gt;</code>\n🗑️ <code>/deletekeys</code>",
     adminMenuMarkup(),
   );
 }
 
 function adminMenuMarkup() {
   return {
-    inline_keyboard: [[
-      { text: "Set key", callback_data: "menu:setkey" },
-      { text: "Get key", callback_data: "menu:getkey" },
-    ]],
+    inline_keyboard: [
+      [
+        { text: "🔐 Set key", callback_data: "menu:setkey" },
+        { text: "🔎 Get key", callback_data: "menu:getkey" },
+      ],
+      [
+        { text: "🗑️ Delete keys", callback_data: "menu:deletekeys" },
+        { text: "🧹 Clear chat", callback_data: "menu:clearchat" },
+      ],
+    ],
   };
 }
 
@@ -229,8 +265,135 @@ async function getApiKey(env, name) {
   return row?.value;
 }
 
+async function sendDeleteKeysPicker(env, chatId) {
+  await pruneExpiredDeleteSessions(env);
+
+  const names = await listApiKeyNames(env);
+  if (names.length === 0) {
+    await sendTelegramMessage(env, chatId, "🫧 <b>No API keys to delete.</b> Your vault is already clean.", adminMenuMarkup());
+    return;
+  }
+
+  const sessionId = crypto.randomUUID();
+  const now = Math.floor(Date.now() / 1000);
+  await env.DB.prepare("INSERT INTO delete_key_sessions (id, created_at, expires_at) VALUES (?, ?, ?)")
+    .bind(sessionId, now, now + DELETE_SESSION_TTL_SECONDS)
+    .run();
+
+  for (const name of names) {
+    await env.DB.prepare("INSERT INTO delete_key_session_items (session_id, key_name, selected) VALUES (?, ?, 0)")
+      .bind(sessionId, name)
+      .run();
+  }
+
+  await sendTelegramMessage(env, chatId, deleteKeysPrompt(), await deleteKeysMarkup(env, sessionId));
+}
+
+async function handleDeleteKeysCallback(callbackQuery, env) {
+  const [, action, id] = callbackQuery.data.split(":");
+  const chatId = callbackQuery.message?.chat?.id;
+  const messageId = callbackQuery.message?.message_id;
+
+  if (action === "toggle") {
+    const item = await env.DB.prepare(
+      "SELECT item.id, item.session_id, item.selected, session.expires_at FROM delete_key_session_items item JOIN delete_key_sessions session ON session.id = item.session_id WHERE item.id = ?"
+    ).bind(id).first();
+    if (!item || item.expires_at <= Math.floor(Date.now() / 1000)) {
+      await answerCallbackQuery(env, callbackQuery.id, "This delete picker expired. Open a new one.");
+      return;
+    }
+
+    await env.DB.prepare("UPDATE delete_key_session_items SET selected = ? WHERE id = ?")
+      .bind(item.selected ? 0 : 1, id)
+      .run();
+    await editTelegramMessage(env, chatId, messageId, deleteKeysPrompt(), await deleteKeysMarkup(env, item.session_id));
+    await answerCallbackQuery(env, callbackQuery.id, item.selected ? "Key unselected." : "Key selected.");
+    return;
+  }
+
+  if (action === "confirm") {
+    const selectedNames = await selectedDeleteKeyNames(env, id);
+    if (selectedNames.length === 0) {
+      await answerCallbackQuery(env, callbackQuery.id, "Select at least one key first.");
+      return;
+    }
+
+    await deleteApiKeys(env, selectedNames);
+    await deleteDeleteSession(env, id);
+    await editTelegramMessage(
+      env,
+      chatId,
+      messageId,
+      `✅ <b>Deletion complete.</b> Removed ${selectedNames.length} key(s):\n${selectedNames.map((name) => `🗑️ <code>${escapeHtml(name)}</code>`).join("\n")}`,
+      adminMenuMarkup(),
+    );
+    await answerCallbackQuery(env, callbackQuery.id, "Selected keys deleted.");
+    return;
+  }
+
+  if (action === "cancel") {
+    await deleteDeleteSession(env, id);
+    await editTelegramMessage(env, chatId, messageId, "🛡️ <b>Deletion cancelled.</b> No keys were changed.", adminMenuMarkup());
+    await answerCallbackQuery(env, callbackQuery.id, "Deletion cancelled.");
+  }
+}
+
+async function listApiKeyNames(env) {
+  const result = await env.DB.prepare("SELECT name FROM api_keys ORDER BY name").all();
+  return (result.results ?? []).map((row) => row.name);
+}
+
+async function selectedDeleteKeyNames(env, sessionId) {
+  const result = await env.DB.prepare("SELECT key_name FROM delete_key_session_items WHERE session_id = ? AND selected = 1 ORDER BY key_name")
+    .bind(sessionId)
+    .all();
+  return (result.results ?? []).map((row) => row.key_name);
+}
+
+async function deleteApiKeys(env, names) {
+  const placeholders = names.map(() => "?").join(", ");
+  await env.DB.prepare(`DELETE FROM api_keys WHERE name IN (${placeholders})`).bind(...names).run();
+}
+
+async function deleteDeleteSession(env, sessionId) {
+  await env.DB.prepare("DELETE FROM delete_key_session_items WHERE session_id = ?").bind(sessionId).run();
+  await env.DB.prepare("DELETE FROM delete_key_sessions WHERE id = ?").bind(sessionId).run();
+}
+
+async function pruneExpiredDeleteSessions(env) {
+  const now = Math.floor(Date.now() / 1000);
+  await env.DB.prepare("DELETE FROM delete_key_session_items WHERE session_id IN (SELECT id FROM delete_key_sessions WHERE expires_at <= ?)")
+    .bind(now)
+    .run();
+  await env.DB.prepare("DELETE FROM delete_key_sessions WHERE expires_at <= ?").bind(now).run();
+}
+
+async function deleteKeysMarkup(env, sessionId) {
+  const result = await env.DB.prepare("SELECT id, key_name, selected FROM delete_key_session_items WHERE session_id = ? ORDER BY key_name")
+    .bind(sessionId)
+    .all();
+  const keyRows = (result.results ?? []).map((row) => ([{
+    text: `${row.selected ? "☑️" : "⬜"} ${row.key_name}`,
+    callback_data: `delete:toggle:${row.id}`,
+  }]));
+
+  return {
+    inline_keyboard: [
+      ...keyRows,
+      [
+        { text: "✅ Delete selected", callback_data: `delete:confirm:${sessionId}` },
+        { text: "🛡️ Cancel", callback_data: `delete:cancel:${sessionId}` },
+      ],
+    ],
+  };
+}
+
+function deleteKeysPrompt() {
+  return "🗑️ <b>Delete API Keys</b>\n\nTap keys to mark them like checkboxes, then confirm when your selection looks right. This keeps deletion deliberate and safe. ✨";
+}
+
 async function notifyAdminsForApproval(env, approval) {
-  const text = `API key request\nName: ${approval.name}\nIP: ${approval.requesterIp}\nExpires: ${new Date(approval.expiresAt * 1000).toISOString()}`;
+  const text = `🚨 <b>API key request</b>\n🔑 <b>Name:</b> <code>${escapeHtml(approval.name)}</code>\n🌐 <b>IP:</b> <code>${escapeHtml(approval.requesterIp)}</code>\n⏳ <b>Expires:</b> <code>${new Date(approval.expiresAt * 1000).toISOString()}</code>`;
   const reply_markup = {
     inline_keyboard: [[
       { text: "Approve", callback_data: `approve:${approval.id}` },
@@ -248,7 +411,25 @@ async function sendTelegramMessage(env, chatId, text, reply_markup) {
   await fetch(`https://api.telegram.org/bot${env.TELEGRAM_BOT_TOKEN}/sendMessage`, {
     method: "POST",
     headers: JSON_HEADERS,
-    body: JSON.stringify({ chat_id: chatId, text, reply_markup }),
+    body: JSON.stringify({ chat_id: chatId, text, parse_mode: "HTML", reply_markup }),
+  });
+}
+
+async function editTelegramMessage(env, chat_id, message_id, text, reply_markup) {
+  if (!chat_id || !message_id) return;
+  await fetch(`https://api.telegram.org/bot${env.TELEGRAM_BOT_TOKEN}/editMessageText`, {
+    method: "POST",
+    headers: JSON_HEADERS,
+    body: JSON.stringify({ chat_id, message_id, text, parse_mode: "HTML", reply_markup }),
+  });
+}
+
+async function deleteTelegramMessage(env, chat_id, message_id) {
+  if (!chat_id || !message_id) return;
+  await fetch(`https://api.telegram.org/bot${env.TELEGRAM_BOT_TOKEN}/deleteMessage`, {
+    method: "POST",
+    headers: JSON_HEADERS,
+    body: JSON.stringify({ chat_id, message_id }),
   });
 }
 
@@ -266,6 +447,13 @@ function adminChatIds(env) {
 
 function adminUserIds(env) {
   return parseCommaSeparatedIds(env.TELEGRAM_ADMIN_USER_IDS);
+}
+
+function escapeHtml(value) {
+  return String(value)
+    .replaceAll("&", "&amp;")
+    .replaceAll("<", "&lt;")
+    .replaceAll(">", "&gt;");
 }
 
 function parseCommaSeparatedIds(value) {
@@ -290,13 +478,15 @@ function isAdmin(userId, env) {
 }
 
 function logStartupConfig(env) {
-  if (startupConfigLogged) return;
-
-  startupConfigLogged = true;
-  console.info("Worker startup Telegram admin configuration.", {
+  const startupConfig = {
     adminUserIds: adminUserIds(env),
     adminChatIds: adminChatIds(env),
-  });
+  };
+  const startupConfigSignature = JSON.stringify(startupConfig);
+  if (startupConfigSignature === lastStartupConfigSignature) return;
+
+  lastStartupConfigSignature = startupConfigSignature;
+  console.info("Worker startup Telegram admin configuration.", startupConfig);
 }
 
 function json(body, status = 200) {
