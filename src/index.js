@@ -4,7 +4,6 @@ const STATUS_PENDING = "pending";
 const STATUS_APPROVED = "approved";
 const STATUS_REJECTED = "rejected";
 const STATUS_EXPIRED = "expired";
-let startupConfigLogged = false;
 
 export default {
   async fetch(request, env) {
@@ -55,11 +54,6 @@ async function handleTelegramWebhook(request, env) {
   const chatId = message.chat.id;
 
   if (!isAdmin(message.from?.id, env)) {
-    console.warn("Telegram message rejected because sender is not an admin.", {
-      userId: String(message.from?.id ?? "unknown"),
-      chatId: String(chatId),
-      configuredAdminUserIds: adminUserIds(env),
-    });
     await sendTelegramMessage(env, chatId, "Thanks for your message. This bot is managed by admins only, so I can't process commands from this account.");
     return json({ ok: true });
   }
@@ -104,14 +98,7 @@ async function handleAdminMessage(env, chatId, text) {
 }
 
 async function handleTelegramCallback(callbackQuery, env) {
-  if (!isAdmin(callbackQuery.from?.id, env)) {
-    console.warn("Telegram callback rejected because sender is not an admin.", {
-      userId: String(callbackQuery.from?.id ?? "unknown"),
-      data: callbackQuery.data,
-      configuredAdminUserIds: adminUserIds(env),
-    });
-    return json({ ok: true });
-  }
+  if (!isAdmin(callbackQuery.from?.id, env)) return json({ ok: true });
 
   if (callbackQuery.data?.startsWith("menu:")) {
     await handleMenuCallback(callbackQuery, env);
