@@ -1,7 +1,6 @@
 # API Key Get Endpoints
 
 Cloudflare Worker that stores API keys in Cloudflare D1, lets Telegram admins set and retrieve keys, and exposes a REST endpoint that returns a key only after Telegram admin approval.
-8946391716:AAGXThJHdoNBTLAmBkxsPf7LTlkDVRl0dlI
 
 ## Behavior
 
@@ -30,7 +29,6 @@ Secrets / variables:
 - `TELEGRAM_ADMIN_USER_IDS`: comma-separated Telegram user IDs allowed to run bot commands and approve REST requests.
 - `TELEGRAM_ADMIN_CHAT_IDS`: comma-separated Telegram chat IDs that should receive REST approval requests.
 - `TELEGRAM_WEBHOOK_SECRET`: optional Telegram webhook secret checked against `x-telegram-bot-api-secret-token`.
-- cfut_SbuJf44cisDpHvnapFpdWR-T@gore123+-5bulgbSlFqjeoV2lXXebd773fc
 
 ## Setup
 
@@ -53,20 +51,9 @@ curl "https://api.telegram.org/bot$TELEGRAM_BOT_TOKEN/setWebhook" \
   -d '{"url":"https://<worker-domain>/telegram/webhook","secret_token":"'"$TELEGRAM_WEBHOOK_SECRET"'"}'
 ```
 
-## Logging
-
-- On the first request handled by a Worker isolate, the Worker logs configured Telegram admin user IDs and admin chat IDs.
-- Every Telegram admin authorization check logs the incoming user ID, whether access was allowed, and the configured admin user IDs.
-- Rejected Telegram messages and callbacks also emit warning logs to help diagnose mismatched Telegram user IDs.
-
-View live Worker logs with:
-
-```bash
-npx wrangler tail
-```
-
 ## Endpoints
 
+- `GET /`: JSON index describing the REST endpoints this worker supports.
 - `POST /telegram/webhook`: Telegram webhook receiver.
 - `GET /api/keys/:name`: public key request endpoint that returns an idempotency key for approval polling.
 - `GET /api/keys/status/:idempotencyKey`: returns `pending`, approved key data, or `401` with `rejected`/`expired`.
