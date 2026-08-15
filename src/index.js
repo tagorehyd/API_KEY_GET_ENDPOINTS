@@ -4,6 +4,7 @@ const STATUS_PENDING = "pending";
 const STATUS_APPROVED = "approved";
 const STATUS_REJECTED = "rejected";
 const STATUS_EXPIRED = "expired";
+let startupConfigLogged = false;
 
 export default {
   async fetch(request, env) {
