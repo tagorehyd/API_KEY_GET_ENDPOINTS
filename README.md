@@ -7,7 +7,7 @@ Cloudflare Worker that stores API keys in Cloudflare D1, lets Telegram admins se
 - Telegram admins can send `hi`, `hello`, `hey`, or `/start` to receive an interactive menu.
 - The menu offers graphical **Set key**, **Get key**, **Delete keys**, and **Clear chat** actions with emoji-rich Telegram responses, while follow-up buttons appear only for active workflows that need them.
 - Telegram admins can set keys with `/setkey <name> <value>` or tap **Set key** for a guided two-step prompt that asks for the key name and value with a cancel button.
-- Telegram admins can retrieve keys directly with `/getkey <name>`.
+- Telegram admins can retrieve keys directly with `/getkey <name>`; encrypted stores show the encrypted value plus a masked hint instead of plaintext.
 - Telegram admins can delete keys with `/deletekeys` or the **Delete keys** menu option, using checkbox-style inline selection before confirming deletion.
 - Telegram admins can refresh the bot menu with `/clearchat` or the **Clear chat** menu option; Telegram only allows the bot to remove messages it can delete.
 - Non-admin Telegram users receive a short reply explaining that only admins can use bot commands.
@@ -16,7 +16,7 @@ Cloudflare Worker that stores API keys in Cloudflare D1, lets Telegram admins se
 - The worker sends Telegram admins an approval prompt with **Approve** and **Decline** buttons.
 - Callers poll `GET /api/keys/status/:idempotencyKey` for the request result.
 - Status values use the original lifecycle: `pending`, `approved`, `rejected`, and `expired`.
-- If an admin approves before expiry, the status endpoint returns the requested key.
+- If an admin approves before expiry, the status endpoint returns the requested key. When encryption is enabled, the response includes the encrypted value, an `encrypted` boolean, and `maskedValue` (first 2 and last 4 characters of the original).
 - If an admin declines or 5 minutes pass, the status endpoint returns `401` with `rejected` or `expired` status.
 
 ## Required Cloudflare bindings and secrets
@@ -29,6 +29,8 @@ Secrets / variables:
 - `TELEGRAM_ADMIN_USER_IDS`: comma-separated Telegram user IDs allowed to run bot commands and approve REST requests.
 - `TELEGRAM_ADMIN_CHAT_IDS`: comma-separated Telegram chat IDs that should receive REST approval requests.
 - `TELEGRAM_WEBHOOK_SECRET`: optional Telegram webhook secret checked against `x-telegram-bot-api-secret-token`.
+- `API_KEY_PUBLIC_KEY`: optional PEM public key. When configured, newly stored keys and any existing unencrypted rows found during key operations are encrypted before storage.
+- `API_KEY_ENCRYPTED`: optional encryption flag. Set to `false` or `0` to disable public-key encryption even when `API_KEY_PUBLIC_KEY` is present. Defaults to enabled when a public key is configured.
 
 ## Setup
 
@@ -40,6 +42,8 @@ npx wrangler secret put TELEGRAM_BOT_TOKEN
 npx wrangler secret put TELEGRAM_ADMIN_USER_IDS
 npx wrangler secret put TELEGRAM_ADMIN_CHAT_IDS
 npx wrangler secret put TELEGRAM_WEBHOOK_SECRET
+python3 generate_key_pair.py
+npx wrangler secret put API_KEY_PUBLIC_KEY
 npm run deploy
 ```
 
@@ -50,6 +54,12 @@ curl "https://api.telegram.org/bot$TELEGRAM_BOT_TOKEN/setWebhook" \
   -H 'content-type: application/json' \
   -d '{"url":"https://<worker-domain>/telegram/webhook","secret_token":"'"$TELEGRAM_WEBHOOK_SECRET"'"}'
 ```
+
+## Public-key encryption
+
+Run `python3 generate_key_pair.py` to create an RSA key pair. Store the public key in the worker environment as `API_KEY_PUBLIC_KEY`; keep the private key only in the receiving application that decrypts approved API responses. Use `python3 decrypt_value.py --private-key private_key.pem --value <encrypted-value>` or set `API_KEY_PRIVATE_KEY` to decrypt returned values. If no public key is configured, values continue to be stored and returned as plaintext.
+
+The `api_keys` table tracks encryption state with `encrypted` and stores a safe `masked_value` hint. When encryption is enabled, existing rows with `encrypted = 0` are encrypted lazily before key operations complete.
 
 ## Endpoints
 

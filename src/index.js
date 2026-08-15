@@ -8,6 +8,8 @@ const SET_KEY_SESSION_TTL_SECONDS = 10 * 60;
 const SET_KEY_STEP_NAME = "name";
 const SET_KEY_STEP_VALUE = "value";
 const DELETE_SESSION_TTL_SECONDS = 10 * 60;
+const ENCRYPTION_ALGORITHM = "RSA-OAEP";
+const ENCRYPTION_HASH = "SHA-256";
 
 export default {
   async fetch(request, env) {
@@ -422,7 +424,7 @@ async function getApiKeyRequestStatus(idempotencyKey, request, env) {
   if (status === STATUS_APPROVED) {
     const apiKey = await getApiKey(env, row.key_name);
     if (!apiKey) return json({ idempotencyKey, status: STATUS_APPROVED, error: "Key not found" }, 404);
-    return json({ idempotencyKey, status: STATUS_APPROVED, name: row.key_name, value: apiKey });
+    return json({ idempotencyKey, status: STATUS_APPROVED, name: row.key_name, ...apiKey });
   }
 
   const statusUrl = new URL(`/api/keys/status/${encodeURIComponent(idempotencyKey)}`, request.url).toString();
@@ -463,14 +465,101 @@ async function handleApprovalCallback(callbackQuery, env) {
 }
 
 async function setApiKey(env, name, value) {
+  await ensureApiKeysEncryptionColumns(env);
+  const protectedKey = await protectApiKeyValue(env, value);
   await env.DB.prepare(
-    "INSERT INTO api_keys (name, value, updated_at) VALUES (?, ?, CURRENT_TIMESTAMP) ON CONFLICT(name) DO UPDATE SET value = excluded.value, updated_at = CURRENT_TIMESTAMP"
-  ).bind(name, value).run();
+    "INSERT INTO api_keys (name, value, encrypted, masked_value, updated_at) VALUES (?, ?, ?, ?, CURRENT_TIMESTAMP) ON CONFLICT(name) DO UPDATE SET value = excluded.value, encrypted = excluded.encrypted, masked_value = excluded.masked_value, updated_at = CURRENT_TIMESTAMP"
+  ).bind(name, protectedKey.value, protectedKey.encrypted ? 1 : 0, protectedKey.maskedValue).run();
 }
 
 async function getApiKey(env, name) {
-  const row = await env.DB.prepare("SELECT value FROM api_keys WHERE name = ?").bind(name).first();
-  return row?.value;
+  await encryptExistingApiKeysIfConfigured(env);
+  const row = await env.DB.prepare("SELECT value, encrypted, masked_value FROM api_keys WHERE name = ?").bind(name).first();
+  if (!row) return null;
+  return apiKeyResponse(row);
+}
+
+async function encryptExistingApiKeysIfConfigured(env) {
+  await ensureApiKeysEncryptionColumns(env);
+  if (!shouldEncryptApiKeys(env)) return;
+
+  const result = await env.DB.prepare("SELECT name, value FROM api_keys WHERE COALESCE(encrypted, 0) = 0").all();
+  for (const row of result.results ?? []) {
+    const protectedKey = await protectApiKeyValue(env, row.value);
+    await env.DB.prepare("UPDATE api_keys SET value = ?, encrypted = 1, masked_value = ?, updated_at = CURRENT_TIMESTAMP WHERE name = ? AND COALESCE(encrypted, 0) = 0")
+      .bind(protectedKey.value, protectedKey.maskedValue, row.name)
+      .run();
+  }
+}
+
+async function ensureApiKeysEncryptionColumns(env) {
+  if (env.__apiKeysEncryptionColumnsReady) return;
+  await env.DB.prepare("ALTER TABLE api_keys ADD COLUMN encrypted INTEGER NOT NULL DEFAULT 0").run().catch(ignoreDuplicateColumnError);
+  await env.DB.prepare("ALTER TABLE api_keys ADD COLUMN masked_value TEXT").run().catch(ignoreDuplicateColumnError);
+  await env.DB.prepare("UPDATE api_keys SET masked_value = substr(value, 1, 2) || '…' || substr(value, -4) WHERE masked_value IS NULL AND COALESCE(encrypted, 0) = 0").run();
+  env.__apiKeysEncryptionColumnsReady = true;
+}
+
+function ignoreDuplicateColumnError(error) {
+  if (!String(error?.message ?? error).toLowerCase().includes("duplicate column")) throw error;
+}
+
+async function protectApiKeyValue(env, value) {
+  const maskedValue = maskApiKeyValue(value);
+  if (!shouldEncryptApiKeys(env)) return { value, encrypted: false, maskedValue };
+  return { value: await encryptWithPublicKey(env.API_KEY_PUBLIC_KEY, value), encrypted: true, maskedValue };
+}
+
+function shouldEncryptApiKeys(env) {
+  const hasPublicKey = Boolean(env.API_KEY_PUBLIC_KEY?.trim());
+  const enabledFlag = env.API_KEY_ENCRYPTED ?? env.ENCRYPTED ?? env.ENCRYPT_API_KEYS;
+  return hasPublicKey && enabledFlag !== "false" && enabledFlag !== "0";
+}
+
+function apiKeyResponse(row) {
+  return {
+    value: row.value,
+    encrypted: Boolean(row.encrypted),
+    maskedValue: row.masked_value ?? maskApiKeyValue(row.value),
+  };
+}
+
+function maskApiKeyValue(value) {
+  const text = String(value ?? "");
+  if (text.length <= 6) return `${text.slice(0, 2)}…${text.slice(-Math.min(4, text.length))}`;
+  return `${text.slice(0, 2)}…${text.slice(-4)}`;
+}
+
+async function encryptWithPublicKey(publicKeyPem, plaintext) {
+  const key = await crypto.subtle.importKey(
+    "spki",
+    pemToArrayBuffer(publicKeyPem),
+    { name: ENCRYPTION_ALGORITHM, hash: ENCRYPTION_HASH },
+    false,
+    ["encrypt"],
+  );
+  const encrypted = await crypto.subtle.encrypt({ name: ENCRYPTION_ALGORITHM }, key, new TextEncoder().encode(plaintext));
+  return arrayBufferToBase64(encrypted);
+}
+
+function pemToArrayBuffer(pem) {
+  const base64 = pem.replace(/-----BEGIN PUBLIC KEY-----|-----END PUBLIC KEY-----|\s/g, "");
+  const binary = atob(base64);
+  return Uint8Array.from(binary, (char) => char.charCodeAt(0)).buffer;
+}
+
+function arrayBufferToBase64(buffer) {
+  const bytes = new Uint8Array(buffer);
+  let binary = "";
+  for (const byte of bytes) binary += String.fromCharCode(byte);
+  return btoa(binary);
+}
+
+function formatTelegramApiKey(name, apiKey) {
+  if (apiKey.encrypted) {
+    return `✅ <b>${escapeHtml(name)}</b>\n🔒 <b>Encrypted:</b> <code>true</code>\n🎭 <b>Masked:</b> <code>${escapeHtml(apiKey.maskedValue)}</code>\n🔐 <b>Value:</b> <code>${escapeHtml(apiKey.value)}</code>`;
+  }
+  return `✅ <b>${escapeHtml(name)}</b>\n<code>${escapeHtml(apiKey.value)}</code>`;
 }
 
 async function sendDeleteKeysPicker(env, chatId) {
@@ -547,6 +636,7 @@ async function handleDeleteKeysCallback(callbackQuery, env) {
 }
 
 async function listApiKeyNames(env) {
+  await encryptExistingApiKeysIfConfigured(env);
   const result = await env.DB.prepare("SELECT name FROM api_keys ORDER BY name").all();
   return (result.results ?? []).map((row) => row.name);
 }
