@@ -6,8 +6,8 @@ Cloudflare Worker that stores API keys in Cloudflare D1, lets Telegram admins se
 ## Behavior
 
 - Telegram admins can send `hi`, `hello`, `hey`, or `/start` to receive an interactive menu.
-- The menu offers graphical **Set key**, **Get key**, **Delete keys**, and **Clear chat** actions with emoji-rich Telegram responses.
-- Telegram admins can set keys with `/setkey <name> <value>`.
+- The menu offers graphical **Set key**, **Get key**, **Delete keys**, and **Clear chat** actions with emoji-rich Telegram responses, while follow-up buttons appear only for active workflows that need them.
+- Telegram admins can set keys with `/setkey <name> <value>` or tap **Set key** for a guided two-step prompt that asks for the key name and value with a cancel button.
 - Telegram admins can retrieve keys directly with `/getkey <name>`.
 - Telegram admins can delete keys with `/deletekeys` or the **Delete keys** menu option, using checkbox-style inline selection before confirming deletion.
 - Telegram admins can refresh the bot menu with `/clearchat` or the **Clear chat** menu option; Telegram only allows the bot to remove messages it can delete.
