@@ -4,13 +4,18 @@ const STATUS_PENDING = "pending";
 const STATUS_APPROVED = "approved";
 const STATUS_REJECTED = "rejected";
 const STATUS_EXPIRED = "expired";
-let startupConfigLogged = false;
+const SET_KEY_SESSION_TTL_SECONDS = 10 * 60;
+const SET_KEY_STEP_NAME = "name";
+const SET_KEY_STEP_VALUE = "value";
+const DELETE_SESSION_TTL_SECONDS = 10 * 60;
 
 export default {
   async fetch(request, env) {
-    logStartupConfig(env);
-
     const url = new URL(request.url);
+
+    if (request.method === "GET" && url.pathname === "/") {
+      return getApiIndex(request);
+    }
 
     if (request.method === "POST" && url.pathname === "/telegram/webhook") {
       return handleTelegramWebhook(request, env);
@@ -33,6 +38,54 @@ export default {
     return json({ error: "Not found" }, 404);
   },
 };
+
+function getApiIndex(request) {
+  const origin = new URL(request.url).origin;
+
+  return json({
+    name: "API Key Get Endpoints",
+    description: "Stores API keys in D1, manages them through Telegram admin commands, and serves REST key requests after Telegram approval.",
+    endpoints: [
+      {
+        method: "GET",
+        path: "/",
+        url: `${origin}/`,
+        description: "Returns this JSON index of available REST abilities.",
+      },
+      {
+        method: "GET",
+        path: "/health",
+        url: `${origin}/health`,
+        description: "Health check endpoint.",
+        response: { ok: true },
+      },
+      {
+        method: "GET",
+        path: "/api/keys/{name}",
+        url: `${origin}/api/keys/{name}`,
+        description: "Requests access to a stored API key by name and notifies Telegram admins for approval.",
+        pathParameters: { name: "Stored API key name." },
+        successStatus: 202,
+        responseFields: ["idempotencyKey", "status", "statusUrl", "expiresAt"],
+      },
+      {
+        method: "GET",
+        path: "/api/keys/status/{idempotencyKey}",
+        url: `${origin}/api/keys/status/{idempotencyKey}`,
+        description: "Polls an API key request until it is pending, approved, rejected, or expired.",
+        pathParameters: { idempotencyKey: "Request id returned by GET /api/keys/{name}." },
+        statuses: [STATUS_PENDING, STATUS_APPROVED, STATUS_REJECTED, STATUS_EXPIRED],
+      },
+      {
+        method: "POST",
+        path: "/telegram/webhook",
+        url: `${origin}/telegram/webhook`,
+        description: "Telegram webhook receiver for admin commands, inline buttons, and REST approval callbacks.",
+        headers: { "x-telegram-bot-api-secret-token": "Required when TELEGRAM_WEBHOOK_SECRET is configured." },
+      },
+    ],
+  });
+}
 
 async function handleTelegramWebhook(request, env) {
   const secret = request.headers.get("x-telegram-bot-api-secret-token");
@@ -59,15 +112,15 @@ async function handleTelegramWebhook(request, env) {
     return json({ ok: true });
   }
 
-  await handleAdminMessage(env, chatId, message.text.trim());
+  await handleAdminMessage(env, chatId, message.text.trim(), message.message_id);
   return json({ ok: true });
 }
 
-async function handleAdminMessage(env, chatId, text) {
+async function handleAdminMessage(env, chatId, text, messageId) {
   const [command, ...parts] = text.split(/\s+/);
   const normalizedCommand = command.toLowerCase();
 
-  if (await handlePendingSetKeyInput(env, chatId, text, normalizedCommand)) return;
+  if (await handlePendingSetKeyInput(env, chatId, text, normalizedCommand, messageId)) return;
 
   if (["/start", "hi", "hello", "hey"].includes(normalizedCommand)) {
     await sendAdminMenu(env, chatId);
@@ -82,11 +135,13 @@ async function handleAdminMessage(env, chatId, text) {
       return;
     }
     if (!name || !value) {
-      await sendTelegramMessage(env, chatId, "🔐 <b>Almost there.</b> Use <code>/setkey &lt;name&gt; &lt;value&gt;</code>, or tap <b>Set key</b> in the main menu for a guided flow.");
+      await deleteTelegramMessage(env, chatId, messageId);
+      await sendTelegramMessage(env, chatId, "🔐 <b>Almost there.</b> Sensitive input was removed. Tap <b>Set key</b> in the main menu for the guided flow, or resend the complete command.");
       return;
     }
     await setApiKey(env, name, value);
-    await sendTelegramMessage(env, chatId, `✅ API key <b>${escapeHtml(name)}</b> saved securely.`);
+    await deleteTelegramMessage(env, chatId, messageId);
+    await sendTelegramMessage(env, chatId, "✅ API key saved securely. Sensitive command removed from chat.");
     return;
   }
 
@@ -176,7 +231,7 @@ async function sendAdminMenu(env, chatId) {
   await sendTelegramMessage(
     env,
     chatId,
-    "✨ <b>API Key Command Center</b> ✨\n\nChoose a secure action below, or use:\n🔐 <code>/setkey &lt;name&gt; &lt;value&gt;</code>\n🔎 <code>/getkey &lt;name&gt;</code>\n🗑️ <code>/deletekeys</code>",
+    "✨ <b>API Key Command Center</b> ✨\n\nChoose a secure action below:",
     adminMenuMarkup(),
   );
 }
@@ -219,7 +274,7 @@ async function startSetKeyPrompt(env, chatId) {
   await updateSetKeyPromptMessage(env, sessionId, telegramMessageId(prompt));
 }
 
-async function handlePendingSetKeyInput(env, chatId, text, normalizedCommand) {
+async function handlePendingSetKeyInput(env, chatId, text, normalizedCommand, messageId) {
   await pruneExpiredSetKeySessions(env);
 
   const session = await env.DB.prepare("SELECT id, step, key_name, last_prompt_message_id FROM set_key_sessions WHERE chat_id = ?")
@@ -251,6 +306,7 @@ async function handlePendingSetKeyInput(env, chatId, text, normalizedCommand) {
       return true;
     }
 
+    await deleteTelegramMessage(env, chatId, messageId);
     await deleteSetKeyPromptMessage(env, chatId, session);
     await env.DB.prepare("UPDATE set_key_sessions SET step = ?, key_name = ?, last_prompt_message_id = NULL WHERE id = ?")
       .bind(SET_KEY_STEP_VALUE, keyName, session.id)
@@ -258,7 +314,7 @@ async function handlePendingSetKeyInput(env, chatId, text, normalizedCommand) {
     const prompt = await sendTelegramMessage(
       env,
       chatId,
-      `🔑 <b>${escapeHtml(keyName)}</b>\n\nStep 2 of 2: Now send the API key value. It will be stored securely in D1.`,
+      "🔑 <b>Key name received.</b>\n\nStep 2 of 2: Now send the API key value. It will be stored securely in D1 and removed from chat.",
       setKeyCancelMarkup(session.id),
     );
     await updateSetKeyPromptMessage(env, session.id, telegramMessageId(prompt));
@@ -273,9 +329,10 @@ async function handlePendingSetKeyInput(env, chatId, text, normalizedCommand) {
     }
 
     await setApiKey(env, session.key_name, value);
+    await deleteTelegramMessage(env, chatId, messageId);
     await deleteSetKeyPromptMessage(env, chatId, session);
     await deleteSetKeySession(env, session.id);
-    await sendTelegramMessage(env, chatId, `✅ <b>${escapeHtml(session.key_name)}</b> saved successfully. Your guided setup is complete. ✨`);
+    await sendTelegramMessage(env, chatId, "✅ API key saved successfully. Sensitive setup messages were removed. ✨");
     return true;
   }
 
@@ -620,29 +677,7 @@ function parseCommaSeparatedIds(value) {
 }
 
 function isAdmin(userId, env) {
-  const normalizedUserId = String(userId ?? "");
-  const configuredAdminUserIds = adminUserIds(env);
-  const allowed = configuredAdminUserIds.includes(normalizedUserId);
-
-  console.info("Telegram admin authorization checked.", {
-    userId: normalizedUserId || "unknown",
-    allowed,
-    configuredAdminUserIds,
-  });
-
-  return allowed;
-}
-
-function logStartupConfig(env) {
-  const startupConfig = {
-    adminUserIds: adminUserIds(env),
-    adminChatIds: adminChatIds(env),
-  };
-  const startupConfigSignature = JSON.stringify(startupConfig);
-  if (startupConfigSignature === lastStartupConfigSignature) return;
-
-  lastStartupConfigSignature = startupConfigSignature;
-  console.info("Worker startup Telegram admin configuration.", startupConfig);
+  return adminUserIds(env).includes(String(userId ?? ""));
 }
 
 function json(body, status = 200) {
