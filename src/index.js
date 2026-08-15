@@ -4,7 +4,7 @@ const STATUS_PENDING = "pending";
 const STATUS_APPROVED = "approved";
 const STATUS_REJECTED = "rejected";
 const STATUS_EXPIRED = "expired";
-let startupConfigLogged = false;
+let lastStartupConfigSignature;
 
 export default {
   async fetch(request, env) {
@@ -291,13 +291,15 @@ function isAdmin(userId, env) {
 }
 
 function logStartupConfig(env) {
-  if (startupConfigLogged) return;
-
-  startupConfigLogged = true;
-  console.info("Worker startup Telegram admin configuration.", {
+  const startupConfig = {
     adminUserIds: adminUserIds(env),
     adminChatIds: adminChatIds(env),
-  });
+  };
+  const startupConfigSignature = JSON.stringify(startupConfig);
+  if (startupConfigSignature === lastStartupConfigSignature) return;
+
+  lastStartupConfigSignature = startupConfigSignature;
+  console.info("Worker startup Telegram admin configuration.", startupConfig);
 }
 
 function json(body, status = 200) {
