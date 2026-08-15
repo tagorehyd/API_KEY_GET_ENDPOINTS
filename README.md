@@ -5,11 +5,18 @@ Cloudflare Worker that stores API keys in Cloudflare D1, lets Telegram admins se
 
 ## Behavior
 
+- Telegram admins can send `hi`, `hello`, `hey`, or `/start` to receive an interactive menu.
+- The menu offers **Set key** and **Get key** buttons that explain how to use `/setkey <name> <value>` and `/getkey <name>`.
 - Telegram admins can set keys with `/setkey <name> <value>`.
 - Telegram admins can retrieve keys directly with `/getkey <name>`.
+- Non-admin Telegram users receive a short reply explaining that only admins can use bot commands.
 - Public callers can request a key with `GET /api/keys/:name`.
-- Every REST request creates a Telegram approval prompt with **Approve** and **Reject** buttons.
-- REST approval requests are valid for 5 minutes. If no admin approves in time, or an admin rejects the request, the REST response is `401` with `{"error":"Rejected"}`.
+- Key requests return immediately with an `idempotencyKey`, `pending` status, `statusUrl`, and 5-minute expiry timestamp.
+- The worker sends Telegram admins an approval prompt with **Approve** and **Decline** buttons.
+- Callers poll `GET /api/keys/status/:idempotencyKey` for the request result.
+- Status values use the original lifecycle: `pending`, `approved`, `rejected`, and `expired`.
+- If an admin approves before expiry, the status endpoint returns the requested key.
+- If an admin declines or 5 minutes pass, the status endpoint returns `401` with `rejected` or `expired` status.
 
 ## Required Cloudflare bindings and secrets
 
@@ -44,8 +51,21 @@ curl "https://api.telegram.org/bot$TELEGRAM_BOT_TOKEN/setWebhook" \
   -d '{"url":"https://<worker-domain>/telegram/webhook","secret_token":"'"$TELEGRAM_WEBHOOK_SECRET"'"}'
 ```
 
+## Logging
+
+- On the first request handled by a Worker isolate, the Worker logs configured Telegram admin user IDs and admin chat IDs.
+- Every Telegram admin authorization check logs the incoming user ID, whether access was allowed, and the configured admin user IDs.
+- Rejected Telegram messages and callbacks also emit warning logs to help diagnose mismatched Telegram user IDs.
+
+View live Worker logs with:
+
+```bash
+npx wrangler tail
+```
+
 ## Endpoints
 
 - `POST /telegram/webhook`: Telegram webhook receiver.
-- `GET /api/keys/:name`: public key request endpoint that waits up to 5 minutes for admin approval.
+- `GET /api/keys/:name`: public key request endpoint that returns an idempotency key for approval polling.
+- `GET /api/keys/status/:idempotencyKey`: returns `pending`, approved key data, or `401` with `rejected`/`expired`.
 - `GET /health`: health check.
