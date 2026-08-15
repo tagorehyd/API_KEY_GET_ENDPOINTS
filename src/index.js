@@ -4,11 +4,7 @@ const STATUS_PENDING = "pending";
 const STATUS_APPROVED = "approved";
 const STATUS_REJECTED = "rejected";
 const STATUS_EXPIRED = "expired";
-const DELETE_SESSION_TTL_SECONDS = 10 * 60;
-const SET_KEY_SESSION_TTL_SECONDS = 10 * 60;
-const SET_KEY_STEP_NAME = "name";
-const SET_KEY_STEP_VALUE = "value";
-let lastStartupConfigSignature;
+let startupConfigLogged = false;
 
 export default {
   async fetch(request, env) {
