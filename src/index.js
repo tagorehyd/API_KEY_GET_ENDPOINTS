@@ -54,11 +54,6 @@ async function handleTelegramWebhook(request, env) {
   const chatId = message.chat.id;
 
   if (!isAdmin(message.from?.id, env)) {
-    console.warn("Telegram message rejected because sender is not an admin.", {
-      userId: String(message.from?.id ?? "unknown"),
-      chatId: String(chatId),
-      configuredAdminUserIds: adminUserIds(env),
-    });
     await sendTelegramMessage(env, chatId, "Thanks for your message. This bot is managed by admins only, so I can't process commands from this account.");
     return json({ ok: true });
   }
@@ -68,8 +63,8 @@ async function handleTelegramWebhook(request, env) {
 }
 
 async function handleAdminMessage(env, chatId, text) {
-  const [command = "", ...parts] = text.split(/\s+/);
-  const normalizedCommand = command.toLowerCase().split("@")[0];
+  const [command, ...parts] = text.split(/\s+/);
+  const normalizedCommand = command.toLowerCase();
 
   if (["/start", "hi", "hello", "hey"].includes(normalizedCommand)) {
     await sendAdminMenu(env, chatId);
@@ -103,14 +98,7 @@ async function handleAdminMessage(env, chatId, text) {
 }
 
 async function handleTelegramCallback(callbackQuery, env) {
-  if (!isAdmin(callbackQuery.from?.id, env)) {
-    console.warn("Telegram callback rejected because sender is not an admin.", {
-      userId: String(callbackQuery.from?.id ?? "unknown"),
-      data: callbackQuery.data,
-      configuredAdminUserIds: adminUserIds(env),
-    });
-    return json({ ok: true });
-  }
+  if (!isAdmin(callbackQuery.from?.id, env)) return json({ ok: true });
 
   if (callbackQuery.data?.startsWith("menu:")) {
     await handleMenuCallback(callbackQuery, env);
@@ -123,7 +111,7 @@ async function handleTelegramCallback(callbackQuery, env) {
 
 async function handleMenuCallback(callbackQuery, env) {
   const chatId = callbackQuery.message?.chat?.id;
-  const action = callbackQuery.data?.slice("menu:".length);
+  const action = callbackQuery.data.slice("menu:".length);
 
   if (action === "setkey") {
     if (chatId) await sendTelegramMessage(env, chatId, "Send /setkey <name> <value> to save or update an API key.", adminMenuMarkup());
@@ -210,7 +198,7 @@ async function getApiKeyRequestStatus(idempotencyKey, request, env) {
 }
 
 async function handleApprovalCallback(callbackQuery, env) {
-  const [action, id] = (callbackQuery.data ?? "").split(":");
+  const [action, id] = callbackQuery.data.split(":");
   if (!id || !["approve", "decline"].includes(action)) return;
 
   const now = Math.floor(Date.now() / 1000);
@@ -281,7 +269,7 @@ function adminUserIds(env) {
 }
 
 function parseCommaSeparatedIds(value) {
-  return String(value ?? "")
+  return (value ?? "")
     .split(",")
     .map((id) => id.trim())
     .filter(Boolean);
@@ -302,9 +290,9 @@ function isAdmin(userId, env) {
 }
 
 function logStartupConfig(env) {
-  if (globalThis.__apiKeyEndpointStartupConfigLogged) return;
+  if (startupConfigLogged) return;
 
-  globalThis.__apiKeyEndpointStartupConfigLogged = true;
+  startupConfigLogged = true;
   console.info("Worker startup Telegram admin configuration.", {
     adminUserIds: adminUserIds(env),
     adminChatIds: adminChatIds(env),
