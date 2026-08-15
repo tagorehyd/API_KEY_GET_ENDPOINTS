@@ -145,18 +145,21 @@ async function handleMenuCallback(callbackQuery, env) {
   const action = callbackQuery.data.slice("menu:".length);
 
   if (action === "setkey") {
+    await deleteTelegramMessage(env, chatId, callbackQuery.message?.message_id);
     if (chatId) await startSetKeyPrompt(env, chatId);
     await answerCallbackQuery(env, callbackQuery.id, "Guided set-key prompt opened.");
     return;
   }
 
   if (action === "getkey") {
+    await deleteTelegramMessage(env, chatId, callbackQuery.message?.message_id);
     if (chatId) await sendTelegramMessage(env, chatId, "🔎 Send <code>/getkey &lt;name&gt;</code> to retrieve an API key.");
     await answerCallbackQuery(env, callbackQuery.id, "Get key instructions sent.");
     return;
   }
 
   if (action === "deletekeys") {
+    await deleteTelegramMessage(env, chatId, callbackQuery.message?.message_id);
     if (chatId) await sendDeleteKeysPicker(env, chatId);
     await answerCallbackQuery(env, callbackQuery.id, "Delete key picker opened.");
     return;
@@ -200,29 +203,36 @@ function adminMenuMarkup() {
 async function startSetKeyPrompt(env, chatId) {
   await pruneExpiredSetKeySessions(env);
 
+  const existingSession = await env.DB.prepare("SELECT last_prompt_message_id FROM set_key_sessions WHERE chat_id = ?")
+    .bind(String(chatId))
+    .first();
+  await deleteSetKeyPromptMessage(env, chatId, existingSession ?? {});
+
   const sessionId = crypto.randomUUID();
   const now = Math.floor(Date.now() / 1000);
   await env.DB.prepare(
-    "INSERT INTO set_key_sessions (id, chat_id, step, created_at, expires_at) VALUES (?, ?, ?, ?, ?) ON CONFLICT(chat_id) DO UPDATE SET id = excluded.id, step = excluded.step, key_name = NULL, created_at = excluded.created_at, expires_at = excluded.expires_at"
+    "INSERT INTO set_key_sessions (id, chat_id, step, created_at, expires_at) VALUES (?, ?, ?, ?, ?) ON CONFLICT(chat_id) DO UPDATE SET id = excluded.id, step = excluded.step, key_name = NULL, last_prompt_message_id = NULL, created_at = excluded.created_at, expires_at = excluded.expires_at"
   ).bind(sessionId, String(chatId), SET_KEY_STEP_NAME, now, now + SET_KEY_SESSION_TTL_SECONDS).run();
 
-  await sendTelegramMessage(
+  const prompt = await sendTelegramMessage(
     env,
     chatId,
     "🔐 <b>Guided API Key Setup</b>\n\nStep 1 of 2: What should this key be called?\n\nExample: <code>openai-prod</code>",
     setKeyCancelMarkup(sessionId),
   );
+  await updateSetKeyPromptMessage(env, sessionId, telegramMessageId(prompt));
 }
 
 async function handlePendingSetKeyInput(env, chatId, text, normalizedCommand) {
   await pruneExpiredSetKeySessions(env);
 
-  const session = await env.DB.prepare("SELECT id, step, key_name FROM set_key_sessions WHERE chat_id = ?")
+  const session = await env.DB.prepare("SELECT id, step, key_name, last_prompt_message_id FROM set_key_sessions WHERE chat_id = ?")
     .bind(String(chatId))
     .first();
   if (!session) return false;
 
   if (["/cancel", "cancel"].includes(normalizedCommand)) {
+    await deleteSetKeyPromptMessage(env, chatId, session);
     await deleteSetKeySession(env, session.id);
     await sendTelegramMessage(env, chatId, "🛡️ <b>Set-key prompt cancelled.</b> Nothing was changed.");
     return true;
@@ -245,15 +255,17 @@ async function handlePendingSetKeyInput(env, chatId, text, normalizedCommand) {
       return true;
     }
 
-    await env.DB.prepare("UPDATE set_key_sessions SET step = ?, key_name = ? WHERE id = ?")
+    await deleteSetKeyPromptMessage(env, chatId, session);
+    await env.DB.prepare("UPDATE set_key_sessions SET step = ?, key_name = ?, last_prompt_message_id = NULL WHERE id = ?")
       .bind(SET_KEY_STEP_VALUE, keyName, session.id)
       .run();
-    await sendTelegramMessage(
+    const prompt = await sendTelegramMessage(
       env,
       chatId,
       `🔑 <b>${escapeHtml(keyName)}</b>\n\nStep 2 of 2: Now send the API key value. It will be stored securely in D1.`,
       setKeyCancelMarkup(session.id),
     );
+    await updateSetKeyPromptMessage(env, session.id, telegramMessageId(prompt));
     return true;
   }
 
@@ -265,6 +277,7 @@ async function handlePendingSetKeyInput(env, chatId, text, normalizedCommand) {
     }
 
     await setApiKey(env, session.key_name, value);
+    await deleteSetKeyPromptMessage(env, chatId, session);
     await deleteSetKeySession(env, session.id);
     await sendTelegramMessage(env, chatId, `✅ <b>${escapeHtml(session.key_name)}</b> saved successfully. Your guided setup is complete. ✨`);
     return true;
@@ -288,6 +301,17 @@ async function handleSetKeyCallback(callbackQuery, env) {
 
 async function deleteSetKeySession(env, sessionId) {
   await env.DB.prepare("DELETE FROM set_key_sessions WHERE id = ?").bind(sessionId).run();
+}
+
+async function updateSetKeyPromptMessage(env, sessionId, messageId) {
+  if (!messageId) return;
+  await env.DB.prepare("UPDATE set_key_sessions SET last_prompt_message_id = ? WHERE id = ?")
+    .bind(messageId, sessionId)
+    .run();
+}
+
+async function deleteSetKeyPromptMessage(env, chatId, session) {
+  await deleteTelegramMessage(env, chatId, session.last_prompt_message_id);
 }
 
 async function pruneExpiredSetKeySessions(env) {
@@ -364,12 +388,24 @@ async function handleApprovalCallback(callbackQuery, env) {
         .bind(STATUS_EXPIRED, id, STATUS_PENDING)
         .run();
     }
+    await editTelegramMessage(
+      env,
+      callbackQuery.message?.chat?.id,
+      callbackQuery.message?.message_id,
+      "⌛ <b>Request expired or already handled.</b> No further action is available.",
+    );
     await answerCallbackQuery(env, callbackQuery.id, "Request expired or already handled.");
     return;
   }
 
   const status = action === "approve" ? STATUS_APPROVED : STATUS_REJECTED;
   await env.DB.prepare("UPDATE approval_requests SET status = ? WHERE id = ?").bind(status, id).run();
+  await editTelegramMessage(
+    env,
+    callbackQuery.message?.chat?.id,
+    callbackQuery.message?.message_id,
+    `${status === STATUS_APPROVED ? "✅" : "❌"} <b>Request ${status}.</b> This approval prompt is now closed.`,
+  );
   await answerCallbackQuery(env, callbackQuery.id, `Request ${status}.`);
 }
 
@@ -527,11 +563,12 @@ async function notifyAdminsForApproval(env, approval) {
 
 async function sendTelegramMessage(env, chatId, text, reply_markup) {
   if (!env.TELEGRAM_BOT_TOKEN) throw new Error("Missing TELEGRAM_BOT_TOKEN");
-  await fetch(`https://api.telegram.org/bot${env.TELEGRAM_BOT_TOKEN}/sendMessage`, {
+  const response = await fetch(`https://api.telegram.org/bot${env.TELEGRAM_BOT_TOKEN}/sendMessage`, {
     method: "POST",
     headers: JSON_HEADERS,
     body: JSON.stringify({ chat_id: chatId, text, parse_mode: "HTML", reply_markup }),
   });
+  return response.json();
 }
 
 async function editTelegramMessage(env, chat_id, message_id, text, reply_markup) {
@@ -558,6 +595,10 @@ async function answerCallbackQuery(env, callback_query_id, text) {
     headers: JSON_HEADERS,
     body: JSON.stringify({ callback_query_id, text }),
   });
+}
+
+function telegramMessageId(responseBody) {
+  return responseBody?.result?.message_id;
 }
 
 function adminChatIds(env) {

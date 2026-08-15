@@ -3,6 +3,7 @@ CREATE TABLE IF NOT EXISTS set_key_sessions (
   chat_id TEXT NOT NULL UNIQUE,
   step TEXT NOT NULL,
   key_name TEXT,
+  last_prompt_message_id INTEGER,
   created_at INTEGER NOT NULL,
   expires_at INTEGER NOT NULL
 );
