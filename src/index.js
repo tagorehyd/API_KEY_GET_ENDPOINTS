@@ -7,6 +7,8 @@ const STATUS_EXPIRED = "expired";
 
 export default {
   async fetch(request, env) {
+    logStartupConfig(env);
+
     const url = new URL(request.url);
 
     if (request.method === "POST" && url.pathname === "/telegram/webhook") {
@@ -259,17 +261,42 @@ async function answerCallbackQuery(env, callback_query_id, text) {
 }
 
 function adminChatIds(env) {
-  return (env.TELEGRAM_ADMIN_CHAT_IDS ?? env.TELEGRAM_ADMIN_CHAT_ID ?? "")
+  return parseCommaSeparatedIds(env.TELEGRAM_ADMIN_CHAT_IDS ?? env.TELEGRAM_ADMIN_CHAT_ID);
+}
+
+function adminUserIds(env) {
+  return parseCommaSeparatedIds(env.TELEGRAM_ADMIN_USER_IDS);
+}
+
+function parseCommaSeparatedIds(value) {
+  return (value ?? "")
     .split(",")
     .map((id) => id.trim())
     .filter(Boolean);
 }
 
 function isAdmin(userId, env) {
-  return (env.TELEGRAM_ADMIN_USER_IDS ?? "")
-    .split(",")
-    .map((id) => id.trim())
-    .includes(String(userId));
+  const normalizedUserId = String(userId ?? "");
+  const configuredAdminUserIds = adminUserIds(env);
+  const allowed = configuredAdminUserIds.includes(normalizedUserId);
+
+  console.info("Telegram admin authorization checked.", {
+    userId: normalizedUserId || "unknown",
+    allowed,
+    configuredAdminUserIds,
+  });
+
+  return allowed;
+}
+
+function logStartupConfig(env) {
+  if (startupConfigLogged) return;
+
+  startupConfigLogged = true;
+  console.info("Worker startup Telegram admin configuration.", {
+    adminUserIds: adminUserIds(env),
+    adminChatIds: adminChatIds(env),
+  });
 }
 
 function json(body, status = 200) {

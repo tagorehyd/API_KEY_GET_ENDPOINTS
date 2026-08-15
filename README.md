@@ -51,6 +51,18 @@ curl "https://api.telegram.org/bot$TELEGRAM_BOT_TOKEN/setWebhook" \
   -d '{"url":"https://<worker-domain>/telegram/webhook","secret_token":"'"$TELEGRAM_WEBHOOK_SECRET"'"}'
 ```
 
+## Logging
+
+- On the first request handled by a Worker isolate, the Worker logs configured Telegram admin user IDs and admin chat IDs.
+- Every Telegram admin authorization check logs the incoming user ID, whether access was allowed, and the configured admin user IDs.
+- Rejected Telegram messages and callbacks also emit warning logs to help diagnose mismatched Telegram user IDs.
+
+View live Worker logs with:
+
+```bash
+npx wrangler tail
+```
+
 ## Endpoints
 
 - `POST /telegram/webhook`: Telegram webhook receiver.
